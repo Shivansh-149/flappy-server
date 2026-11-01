@@ -459,6 +459,32 @@ def r_admin_log(b, ip):
     return {"log": rows[-limit:][::-1], "total": len(db["log"])}
 
 
+def r_admin_import(b, ip):
+    """One-time: copy players/mail from an old data.json into this server (never overwrites existing players)."""
+    check_admin(b, ip)
+    d = b.get("data")
+    if not isinstance(d, dict) or not isinstance(d.get("players"), dict):
+        raise ApiError(400, "Bad data")
+    added = 0
+    for uid, p in d["players"].items():
+        if uid not in db["players"] and isinstance(p, dict) and "th" in p and "name" in p:
+            db["players"][str(uid)] = p
+            added += 1
+    inbox = d.get("inbox") if isinstance(d.get("inbox"), dict) else {}
+    for uid, items in inbox.items():
+        if uid in db["players"] and not db["inbox"].get(uid) and isinstance(items, list):
+            db["inbox"][uid] = items
+    try:
+        db["next_id"] = max(db["next_id"], int(d.get("next_id", 1)))
+    except (TypeError, ValueError):
+        pass
+    if not db["log"] and isinstance(d.get("log"), list):
+        db["log"] = d["log"][-LOG_MAX:]
+    save()
+    print("ADMIN: imported %d players" % added)
+    return {"ok": True, "added": added, "players": len(db["players"])}
+
+
 def schedule_exit(restart):
     """Answer the request first, then stop the server (and start it again if restart)."""
     global _restart
@@ -661,7 +687,7 @@ ROUTES = {"/duel/find": r_duel_find, "/duel/state": r_duel_state,
           "/duel/leave": r_duel_leave, "/admin/duels": r_admin_duels, "/register": r_register, "/lookup": r_lookup, "/name": r_name,
           "/gift": r_gift, "/inbox": r_inbox, "/ack": r_ack,
           "/admin/players": r_admin_players, "/admin/gift": r_admin_gift,
-          "/admin/log": r_admin_log, "/admin/restart": r_admin_restart, "/admin/stop": r_admin_stop}
+          "/admin/log": r_admin_log, "/admin/import": r_admin_import, "/admin/restart": r_admin_restart, "/admin/stop": r_admin_stop}
 
 
 ADMIN_HTML = r"""<!doctype html>
@@ -839,7 +865,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             ip = self.client_ip()
             length = int(self.headers.get("Content-Length") or 0)
-            if length < 0 or length > MAX_BODY:
+            if length < 0 or length > (8000000 if self.path == "/admin/import" else MAX_BODY):
                 return self.reply(413, {"error": "Too big"})
             raw = self.rfile.read(length) if length else b"{}"
             with lock:
